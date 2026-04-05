@@ -5,6 +5,7 @@ Aislado para que cambios en otras partes no lo afecten.
 
 import asyncio
 import json
+import re
 import platform
 import subprocess
 import shutil
@@ -15,6 +16,15 @@ from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
 LOGIN_URL = "https://udearroba.udea.edu.co/internos/my/"
+
+INGENIA_MEETING_RE = re.compile(
+    r"https?://ingenia\.udea\.edu\.co/zoom/meeting/(\d+)/?",
+    re.IGNORECASE,
+)
+
+
+def _is_ingenia_url(url: str) -> bool:
+    return bool(url and "ingenia.udea.edu.co" in url.lower() and "/zoom/meeting/" in url.lower())
 
 # User agent real de Chrome estable (no el de Playwright/Chromium)
 CHROME_UA = (
@@ -226,6 +236,112 @@ async def _scrape_course(page, course_info: dict) -> list[dict]:
     }""")
 
 
+def _ingenia_meeting_ud(url: str) -> str:
+    m = INGENIA_MEETING_RE.search(url.strip())
+    return m.group(1) if m else ""
+
+
+async def _scrape_ingenia_course(page, page_url: str) -> list[dict]:
+    """
+    Lista de grabaciones desde Archivo de Clases (Ingenia). Pagina con «Siguiente».
+    Misma forma que _scrape_course para el resto del pipeline.
+    """
+    meeting_ud = _ingenia_meeting_ud(page_url)
+    await _safe_goto(page, page_url)
+    await asyncio.sleep(2)
+
+    course_title = ""
+    try:
+        course_title = await page.locator("main h2.text-3xl").first.inner_text(timeout=5000)
+        course_title = course_title.strip()
+    except Exception:
+        pass
+
+    all_rows: list[dict] = []
+    seen_rec_tokens: set[str] = set()
+
+    while True:
+        batch = await page.evaluate(
+            """(courseTitle) => {
+            const MONTHS = {
+                enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
+                julio: 7, agosto: 8, septiembre: 9, octubre: 10, noviembre: 11, diciembre: 12
+            };
+            function parseSpanishDate(s) {
+                const m = s.trim().match(/^(\\d{1,2}) de (\\w+), (\\d{4})$/i);
+                if (!m) return '';
+                const d = parseInt(m[1], 10);
+                const mo = MONTHS[m[2].toLowerCase()];
+                const y = parseInt(m[3], 10);
+                if (!mo) return '';
+                return y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+            }
+            const cards = document.querySelectorAll(
+                'div.rounded-lg.border.bg-card.text-card-foreground.shadow-sm'
+            );
+            const results = [];
+            for (const card of cards) {
+                const links = [...card.querySelectorAll('a[href*="udea.zoom.us/rec/play"]')];
+                const videoA = links.find(a => /grabaci[oó]n de video/i.test(a.textContent || ''));
+                if (!videoA) continue;
+                const href = videoA.getAttribute('href') || '';
+                const dateEl = card.querySelector('div.font-semibold.tracking-tight.text-xl');
+                const dateStr = dateEl ? dateEl.textContent.trim() : '';
+                const start_date = parseSpanishDate(dateStr);
+                let duration_minutes = 0;
+                const dm = (card.innerText || '').match(/(\\d+)\\s*min/);
+                if (dm) duration_minutes = parseInt(dm[1], 10);
+                results.push({
+                    full_url: href,
+                    start_date: start_date,
+                    duration_minutes: duration_minutes,
+                    date_label: dateStr,
+                    topic: courseTitle || ''
+                });
+            }
+            return results;
+        }""",
+            course_title,
+        )
+
+        added_this_page = 0
+        for item in batch:
+            href = item.get("full_url") or ""
+            m = re.search(r"/rec/(?:share|play)/([^?\s#]+)", href)
+            rec_token = m.group(1) if m else href
+            if rec_token in seen_rec_tokens:
+                continue
+            seen_rec_tokens.add(rec_token)
+            added_this_page += 1
+            date_label = item.get("date_label") or ""
+            topic = item.get("topic") or ""
+            all_rows.append(
+                {
+                    "url": href.split("?")[0],
+                    "full_url": href,
+                    "text": date_label or topic or rec_token[:20],
+                    "id": rec_token,
+                    "meeting_id": meeting_ud,
+                    "topic": topic,
+                    "start_date": item.get("start_date") or "",
+                    "duration_minutes": int(item.get("duration_minutes") or 0),
+                }
+            )
+
+        siguiente = page.get_by_role("button", name="Siguiente")
+        try:
+            if await siguiente.is_disabled():
+                break
+        except Exception:
+            break
+        if added_this_page == 0:
+            break
+        await siguiente.click()
+        await asyncio.sleep(2.5)
+
+    return all_rows
+
+
 async def do_login(work_dir: Path):
     """No-op: login ahora se hace dentro de login_and_scrape."""
     pass
@@ -338,20 +454,35 @@ async def login_and_scrape(work_dir: Path, courses: dict) -> dict:
     bdir = _browser_data_dir(work_dir)
     results = {}
 
-    async with async_playwright() as p:
-        # Paso 1: asegurar login (abre ventana solo si la sesión expiró)
-        await _ensure_login(work_dir, p)
+    moodle_courses = {}
+    ingenia_courses = {}
+    for slug, info in courses.items():
+        u = info.get("moodle_url") or ""
+        if _is_ingenia_url(u):
+            ingenia_courses[slug] = info
+        else:
+            moodle_courses[slug] = info
 
-        # Paso 2: scrapear en headless — invisible
+    async with async_playwright() as p:
+        if moodle_courses:
+            await _ensure_login(work_dir, p)
+        else:
+            print("  Solo fuentes Ingenia — no se requiere login en Moodle.\n")
+
         print("  Scrapeando en segundo plano...\n")
         context = await p.chromium.launch_persistent_context(
             str(bdir), **_launch_args(headless=True),
         )
-        await _restore_session(context, work_dir)
+        if moodle_courses:
+            await _restore_session(context, work_dir)
         page = await _setup_page(context)
 
-        for slug, course_info in courses.items():
+        for slug, course_info in moodle_courses.items():
             links = await _scrape_course(page, course_info)
+            results[slug] = links
+
+        for slug, course_info in ingenia_courses.items():
+            links = await _scrape_ingenia_course(page, course_info["moodle_url"])
             results[slug] = links
 
         await context.close()

@@ -1,5 +1,5 @@
 """
-Setup interactivo: configura claude_udea pidiendo los links de Moodle.
+Setup interactivo: configura claude_udea pidiendo los links de grabaciones (Moodle o Ingenia).
 Se ejecuta automáticamente la primera vez.
 """
 
@@ -7,6 +7,23 @@ import json
 import re
 import unicodedata
 from pathlib import Path
+
+
+def normalize_recording_page_url(raw: str) -> str:
+    """
+    Acepta URL completa o solo el ID numérico de reunión de Ingenia (ej. 96660122811).
+    """
+    s = raw.strip()
+    if re.fullmatch(r"\d{8,14}", s):
+        return f"https://ingenia.udea.edu.co/zoom/meeting/{s}"
+    return s
+
+
+def is_valid_recording_page_url(url: str) -> bool:
+    u = url.lower()
+    if "ingenia.udea.edu.co" in u and "/zoom/meeting/" in u:
+        return True
+    return "udearroba" in u or "moodle" in u
 
 
 def slugify(name: str) -> str:
@@ -34,16 +51,18 @@ def run_setup(work_dir: Path):
     print("  ║   Configuración inicial               ║")
     print("  ╚══════════════════════════════════════╝\n")
     print("  Vamos a configurar tus asignaturas.")
-    print("  Necesitás el link de la lista de grabaciones de cada materia en Moodle.")
-    print("  (Es la página donde ves los botones 'Ver grabación')\n")
+    print("  Podés pegar:")
+    print("  • Link de Moodle (UdeArroba) — lista de grabaciones con «Ver grabación»")
+    print("  • Link de Ingenia — https://ingenia.udea.edu.co/zoom/meeting/<ID>")
+    print("  • Solo el ID de reunión de Ingenia (números), ej. 96660122811\n")
 
     courses = {}
 
     while True:
         # Pedir URL
         url = questionary.text(
-            "Link de grabaciones de Moodle:",
-            instruction="(pega la URL completa)",
+            "Link o ID de grabaciones (Moodle o Ingenia):",
+            instruction="(URL completa o solo ID numérico de Ingenia)",
             style=style,
         ).ask()
 
@@ -53,13 +72,12 @@ def run_setup(work_dir: Path):
                 return False
             break
 
-        url = url.strip()
+        url = normalize_recording_page_url(url)
         if not url:
             break
 
-        # Validar que sea una URL de Moodle
-        if "udearroba" not in url and "moodle" not in url:
-            print("  ⚠ No parece ser una URL de Moodle. Intentá de nuevo.\n")
+        if not is_valid_recording_page_url(url):
+            print("  ⚠ No parece ser un link de Moodle ni de Ingenia. Intentá de nuevo.\n")
             continue
 
         # Pedir nombre de la asignatura
@@ -144,11 +162,16 @@ def add_course(work_dir: Path):
         config = json.load(f)
 
     url = questionary.text(
-        "Link de grabaciones de Moodle:",
+        "Link o ID de grabaciones (Moodle o Ingenia):",
         style=style,
     ).ask()
 
     if not url or not url.strip():
+        return False
+
+    url = normalize_recording_page_url(url.strip())
+    if not is_valid_recording_page_url(url):
+        print("  ⚠ URL no válida.\n")
         return False
 
     name = questionary.text(
@@ -162,7 +185,7 @@ def add_course(work_dir: Path):
     slug = slugify(name.strip())
     config["courses"][slug] = {
         "name": name.strip(),
-        "moodle_url": url.strip(),
+        "moodle_url": url,
     }
 
     with open(config_path, "w", encoding="utf-8") as f:
