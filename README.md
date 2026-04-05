@@ -4,7 +4,7 @@
     <strong>Tu asistente académico con IA para la Universidad de Antioquia</strong>
   </p>
   <p align="center">
-    Descarga automática de transcripciones de Zoom desde Moodle → Análisis con Claude Code
+    Transcripciones de Zoom desde Moodle (UdeArroba) o Ingenia (Virtual Ingeniería) → Claude Code
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/python-≥3.10-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
@@ -19,7 +19,7 @@
 
 `claude_udea` es una herramienta de línea de comandos que:
 
-1. **🔍 Scrapea** las grabaciones de Zoom desde Moodle (UdeArroba)
+1. **🔍 Scrapea** las grabaciones de Zoom desde **Moodle (UdeArroba)** y/o desde **[Ingenia](https://ingenia.udea.edu.co/)** (archivo de clases de Virtual Ingeniería)
 2. **📥 Descarga** las transcripciones (y opcionalmente los videos)
 3. **🤖 Abre Claude Code** como asistente académico personalizado con tus clases
 
@@ -31,7 +31,8 @@ Todo en un solo comando: `claude_udea`
 
 - **Setup interactivo** — la primera vez te guía para configurar tus asignaturas
 - **Instalación automática** — detecta e instala dependencias faltantes (incluido Claude Code)
-- **Sesión persistente** — guarda tu sesión de Moodle para no pedir login cada vez
+- **Sesión persistente (Moodle)** — guarda tu sesión de UdeArroba para no pedir login cada vez (no aplica a fuentes solo-Ingenia)
+- **Ingenia / Virtual Ingeniería** — podés usar la URL de la reunión `https://ingenia.udea.edu.co/zoom/meeting/<ID>` o solo el número de ID; sin login en Moodle si todas tus materias vienen de ahí
 - **Scraping invisible** — después del login, el navegador se oculta mientras trabaja
 - **Descarga incremental** — nunca re-descarga lo que ya tenés
 - **Deduplicación inteligente** — identifica grabaciones por fecha, sin duplicados
@@ -74,16 +75,25 @@ pip install -e .
 
 ### Primera vez
 
-> ⚠️ **Antes de empezar**: tené listos los links de la página de grabaciones de cada asignatura en Moodle.
-> Es la página donde ves la lista de grabaciones de Zoom con los botones "Ver grabación".
-> Solo se piden **una vez** durante la configuración inicial — después el CLI los usa automáticamente para descargar las grabaciones más recientes cada vez que lo ejecutes.
+> ⚠️ **Antes de empezar**: tené listos los enlaces de **cada** asignatura: o bien la lista de grabaciones en **Moodle**, o bien la página de la reunión en **Ingenia** (Virtual Ingeniería).
+> Solo se piden **una vez** en el setup — después el CLI los usa en cada ejecución.
 
-#### ¿Cómo conseguir el link?
+#### ¿Cómo conseguir el link? (Moodle — UdeArroba)
 
 1. Entrá a [UdeArroba](https://udearroba.udea.edu.co/)
 2. Abrí la asignatura
 3. Buscá la actividad de **Zoom** donde están las grabaciones
 4. Copiá la URL de esa página — es algo como `https://udearroba.udea.edu.co/mod/zoom/view.php?id=XXXXX`
+
+#### ¿Cómo conseguir el link? (Ingenia — Virtual Ingeniería)
+
+1. Entrá al buscador de clases en [Ingenia](https://ingenia.udea.edu.co/) (portal ligado a [Virtual Ingeniería](https://virtualingenieriaudea.co/))
+2. Localizá tu curso y abrí la página de esa reunión Zoom
+3. Copiá la URL del navegador — tiene esta forma:
+
+   `https://ingenia.udea.edu.co/zoom/meeting/96660122811`
+
+   (el número final es el **ID de reunión**; también podés pegar **solo ese número** en el setup y la herramienta arma la URL)
 
 #### Ejecutar
 
@@ -95,8 +105,8 @@ Se va a:
 
 1. ✅ Verificar e instalar dependencias faltantes
 2. ✅ Pedir los links de grabaciones de cada asignatura (solo la primera vez)
-3. ✅ Abrir un navegador para que inicies sesión en Moodle
-4. ✅ Scrapear las grabaciones automáticamente
+3. ✅ Abrir un navegador para login en **Moodle** solo si tenés al menos una materia en UdeArroba (si todas son Ingenia, este paso se omite)
+4. ✅ Scrapear las grabaciones automáticamente (Moodle e Ingenia)
 5. ✅ Descargar las transcripciones
 6. ✅ Abrir Claude Code como tu asistente académico
 
@@ -106,13 +116,13 @@ Se va a:
 claude_udea              # Actualiza todo y abre Claude Code
 ```
 
-Si tu sesión de Moodle sigue activa, **no abre ningún navegador** — todo corre en segundo plano.
+Si tu sesión de Moodle sigue activa y no hace falta volver a autenticarte, **no abre ningún navegador** para eso — el scraping sigue en segundo plano. (Las materias solo-Ingenia nunca requieren login en UdeArroba.)
 
 ### Opciones
 
 ```bash
 claude_udea --status          # Ver estado de descargas por asignatura
-claude_udea --skip-scrape     # Solo descargar (sin re-scrapear Moodle)
+claude_udea --skip-scrape     # Solo descargar (sin re-scrapear Moodle/Ingenia)
 claude_udea --skip-video      # Solo transcripciones (sin preguntar)
 claude_udea --all             # Video + transcripciones (sin preguntar)
 claude_udea --dry-run         # Simular sin descargar nada
@@ -166,7 +176,7 @@ Una vez dentro de Claude Code, tenés comandos especializados:
 ~/claude-udea/                    # macOS/Linux
 C:\claude-udea\                   # Windows
 ├── CLAUDE.md                     # Instrucciones para Claude Code (auto-generado)
-├── config.json                   # Tus asignaturas configuradas
+├── config.json                   # Asignaturas (moodle_url = lista Moodle o URL Ingenia /zoom/meeting/<ID>)
 ├── recordings.json               # Registro de grabaciones encontradas
 ├── .session-state.json           # Sesión de Moodle (cookies)
 ├── .browser-data/                # Perfil del navegador
@@ -196,17 +206,19 @@ C:\claude-udea\                   # Windows
 
 ## 🔧 Cómo funciona
 
+Las asignaturas pueden mezclarse: unas con lista en **Moodle**, otras con página en **Ingenia** (`/zoom/meeting/<ID>`). El `config.json` guarda el mismo campo `moodle_url` para cualquiera de los dos (nombre histórico).
+
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌──────────────┐
-│   Moodle     │────▶│   Scraping    │────▶│  Descarga    │────▶│  Claude Code  │
-│   (UdeArroba)│     │  (Playwright) │     │  (yt-dlp)    │     │  (Asistente)  │
+│ Moodle y/o   │────▶│   Scraping    │────▶│  Descarga    │────▶│  Claude Code  │
+│ Ingenia      │     │  (Playwright) │     │  (yt-dlp)    │     │  (Asistente)  │
 └─────────────┘     └──────────────┘     └─────────────┘     └──────────────┘
        │                    │                    │                     │
-   Login SSO          Busca links          Baja VTTs           Lee transcripciones
-   (una vez)         de grabaciones     + metadata fecha       y responde preguntas
+   Login solo si          Lista de            Baja VTTs           Lee transcripciones
+   hay Moodle            enlaces Zoom        + metadata           y responde preguntas
 ```
 
-1. **Scraping**: Playwright abre Moodle con stealth anti-detección, extrae los links de las grabaciones de Zoom de cada asignatura
+1. **Scraping**: Playwright usa stealth cuando hace falta; en **Moodle** lee la tabla de grabaciones; en **Ingenia** recorre las tarjetas (incluida la paginación «Siguiente») y toma el enlace «Ver grabación de video»
 2. **Descarga**: yt-dlp descarga las transcripciones (`.vtt`) y opcionalmente los videos. Cada VTT se enriquece con metadata (fecha, asignatura, duración)
 3. **Claude Code**: Se abre con un `CLAUDE.md` personalizado que le dice qué asignaturas tenés, dónde están las transcripciones, y cómo responder
 
@@ -215,7 +227,8 @@ C:\claude-udea\                   # Windows
 ## 🔒 Privacidad y seguridad
 
 - Tus credenciales de Moodle **nunca se guardan** — el login es manual en un navegador real
-- Las cookies de sesión se guardan localmente en `.session-state.json`
+- Las páginas de reuniones en Ingenia se consultan como en un navegador normal; **no usan** la sesión de UdeArroba
+- Las cookies de sesión de Moodle se guardan localmente en `.session-state.json`
 - Todo se procesa localmente en tu máquina
 - Las transcripciones nunca se suben a ningún servidor externo
 - Claude Code lee los archivos locales directamente
