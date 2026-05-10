@@ -191,32 +191,6 @@ def load_recordings(path: Path) -> dict:
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # Deduplicar por start_date dentro de cada curso
-        changed = False
-        for slug, course in data.items():
-            recs = course.get("recordings", {})
-            seen_dates = {}
-            to_remove = []
-            for rec_id, rec_info in recs.items():
-                sd = rec_info.get("start_date", "")
-                if not sd:
-                    continue
-                if sd in seen_dates:
-                    # Mantener el que ya fue descargado, o el primero
-                    existing_id = seen_dates[sd]
-                    if rec_info.get("downloaded") and not recs[existing_id].get("downloaded"):
-                        to_remove.append(existing_id)
-                        seen_dates[sd] = rec_id
-                    else:
-                        to_remove.append(rec_id)
-                else:
-                    seen_dates[sd] = rec_id
-            for rid in to_remove:
-                del recs[rid]
-                changed = True
-        if changed:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
         return data
     return {}
 
@@ -277,11 +251,6 @@ def _merge_scraped(existing, config, slug, links):
         }
 
     course_data = existing[slug]
-    known_dates = {
-        rec["start_date"]
-        for rec in course_data["recordings"].values()
-        if rec.get("start_date")
-    }
 
     new_pending = []
     for link in links:
@@ -291,8 +260,6 @@ def _merge_scraped(existing, config, slug, links):
         if rec_id in course_data["recordings"]:
             course_data["recordings"][rec_id]["url"] = link["full_url"]
             course_data["recordings"][rec_id]["share_url"] = link["url"]
-            continue
-        if start_date and start_date in known_dates:
             continue
 
         rec_info = {
@@ -306,7 +273,6 @@ def _merge_scraped(existing, config, slug, links):
             "downloaded": False,
         }
         course_data["recordings"][rec_id] = rec_info
-        known_dates.add(start_date)
         url = rec_info.get("url") or rec_info.get("share_url", "")
         if url:
             new_pending.append((slug, rec_id, rec_info, url))
@@ -528,7 +494,13 @@ def fase_final(config, recordings, target_courses, assistant_override: str | Non
     if assistant == "ollama":
         from claude_udea.ollama_chat import run_session
 
-        run_session(work_dir, transcripts_dir, ollama_model)
+        summary_for_ollama = "\n".join(summary_lines) if summary_lines else ""
+        run_session(
+            work_dir,
+            transcripts_dir,
+            ollama_model,
+            session_summary=summary_for_ollama or None,
+        )
         return
 
     if assistant == "gemini":
@@ -558,7 +530,10 @@ def main():
 
     # Validar dependencias
     from claude_udea.deps import check_and_install
-    if not check_and_install(require_assistant=not (use_ollama or no_assistant)):
+    if not check_and_install(
+        require_assistant=not (use_ollama or no_assistant),
+        ollama_cli=use_ollama,
+    ):
         sys.exit(1)
 
     import questionary

@@ -41,6 +41,36 @@ def is_ingenia_url(url: str) -> bool:
     return bool(url and INGENIA_MEETING_RE.search(url.strip()))
 
 
+def recording_canonical_key(url: str) -> str | None:
+    """
+    Identificador estable del mismo listado de grabaciones (evitar duplicados en config).
+
+    - Ingenia: ``ingenia:<id_reunion>``
+    - Moodle lista Ude@ (recordingszoom): ``moodle_recordingszoom:<id>``
+    - Moodle actividad Zoom: ``moodle_zoom:<id>`` (mod/zoom/view.php?id=)
+    """
+    if not url or not str(url).strip():
+        return None
+    url = str(url).strip()
+    m = INGENIA_MEETING_RE.search(url)
+    if m:
+        return f"ingenia:{m.group(1)}"
+    low = url.lower()
+    if "udearroba" not in low:
+        return None
+    if "mod/recordingszoom/" in low and "recordinglist.php" in low:
+        m_id = re.search(r"[?&]id=(\d+)", url)
+        if m_id:
+            return f"moodle_recordingszoom:{m_id.group(1)}"
+        return None
+    if "mod/zoom/view" not in low:
+        return None
+    m_id = re.search(r"[?&]id=(\d+)", url)
+    if m_id:
+        return f"moodle_zoom:{m_id.group(1)}"
+    return None
+
+
 def _ingenia_meeting_id(url: str) -> str:
     match = INGENIA_MEETING_RE.search(url.strip())
     return match.group(1) if match else ""
@@ -171,6 +201,39 @@ def _extract_zoom_rec_id(url: str) -> str:
     return match.group(1) if match else url
 
 
+_NEXT_PAGE_TEXT = re.compile(
+    r"(siguiente|próximo|proximo|next|older|más\b|mas\b|›|»)",
+    re.IGNORECASE,
+)
+
+
+def _ingenia_next_page_url(soup: BeautifulSoup, current_url: str) -> str:
+    """Localiza enlace a la página siguiente de la lista de grabaciones Ingenia."""
+    first = soup.find("a", string=re.compile(r"Siguiente", re.IGNORECASE), href=True)
+    if first and first.get("href"):
+        return urljoin(current_url, first["href"])
+
+    for a in soup.find_all("a", href=True):
+        if "udea.zoom.us" in a["href"]:
+            continue
+        t = a.get_text(" ", strip=True)
+        if not t or len(t) > 48:
+            continue
+        if _NEXT_PAGE_TEXT.search(t):
+            href = a["href"].strip()
+            if href in ("#", "") or href.lower().startswith("javascript"):
+                continue
+            full = urljoin(current_url, href)
+            if full.rstrip("/") != current_url.rstrip("/"):
+                return full
+
+    link_rel = soup.find("link", href=True, attrs={"rel": re.compile(r"next", re.I)})
+    if link_rel and link_rel.get("href"):
+        return urljoin(current_url, link_rel["href"])
+
+    return ""
+
+
 def _scrape_ingenia_course(page_url: str) -> list[dict]:
     """
     Scrapea una pagina publica de Ingenia. Mantiene la misma forma de salida
@@ -225,40 +288,25 @@ def _scrape_ingenia_course(page_url: str) -> list[dict]:
                 "duration_minutes": int(duration_match.group(1)) if duration_match else 0,
             })
 
-        next_link = soup.find("a", string=re.compile(r"Siguiente", re.IGNORECASE), href=True)
-        next_url = urljoin(next_url, next_link["href"]) if next_link else ""
+        nxt = _ingenia_next_page_url(soup, next_url)
+        if not nxt or nxt.rstrip("/") == next_url.rstrip("/"):
+            break
+        next_url = nxt
 
     return links
 
 
-def _scrape_one(session: requests.Session | None, slug: str, course_info: dict) -> tuple[str, list[dict]]:
-    """Scrapea una materia. Diseñado para correr en un thread."""
-    url = course_info["moodle_url"]
-    if is_ingenia_url(url):
-        return slug, _scrape_ingenia_course(url)
-
-    if session is None:
-        print(f"  ⚠ {course_info['name']} requiere sesion de Moodle.")
-        return slug, []
-
-    try:
-        r = session.get(url, timeout=30)
-        r.raise_for_status()
-    except Exception as e:
-        print(f"  ⚠ Error accediendo a {course_info['name']}: {e}")
-        return slug, []
-
-    soup = BeautifulSoup(r.text, "html.parser")
+def _scrape_moodle_table_zoom_inputs(soup: BeautifulSoup) -> list[dict]:
+    """Tabla Moodle clásica: inputs zoomplayredirect por fila."""
     table = soup.find("table", class_="generaltable")
     if not table:
-        return slug, []
-
+        return []
     tbody = table.find("tbody")
     if not tbody:
-        return slug, []
+        return []
 
-    links = []
-    seen = set()
+    links: list[dict] = []
+    seen: set[str] = set()
 
     for row in tbody.find_all("tr"):
         cells = row.find_all("td")
@@ -293,6 +341,79 @@ def _scrape_one(session: requests.Session | None, slug: str, course_info: dict) 
             "start_date": start_date,
             "duration_minutes": int(duration) if duration.isdigit() else 0,
         })
+
+    return links
+
+
+def _scrape_moodle_zoom_anchor_rows(soup: BeautifulSoup, page_url: str) -> list[dict]:
+    """
+    Fallback para mod/recordingszoom/ y otras vistas: enlaces a zoom.us/rec/ en filas de tabla.
+    """
+    links: list[dict] = []
+    seen: set[str] = set()
+
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        if "zoom.us/rec/" not in href.lower():
+            continue
+        if not re.search(r"/rec/(?:share|play)/", href):
+            continue
+
+        full_url = urljoin(page_url, href)
+        rec_id = _extract_zoom_rec_id(full_url)
+        if rec_id in seen:
+            continue
+        seen.add(rec_id)
+
+        row = anchor.find_parent("tr")
+        meeting_id = topic = start_date = ""
+        duration = "0"
+        if row:
+            cells = row.find_all("td")
+            if len(cells) >= 4:
+                meeting_id = cells[0].get_text(strip=True)
+                topic = cells[1].get_text(strip=True)
+                start_date = cells[2].get_text(strip=True)
+                duration = cells[3].get_text(strip=True)
+            elif cells:
+                topic = " ".join(c.get_text(" ", strip=True) for c in cells)
+
+        links.append({
+            "url": full_url.split("?")[0],
+            "full_url": full_url,
+            "text": topic or meeting_id or rec_id[:20],
+            "id": rec_id,
+            "meeting_id": meeting_id,
+            "topic": topic,
+            "start_date": start_date,
+            "duration_minutes": int(duration) if str(duration).isdigit() else 0,
+        })
+
+    return links
+
+
+def _scrape_one(session: requests.Session | None, slug: str, course_info: dict) -> tuple[str, list[dict]]:
+    """Scrapea una materia. Diseñado para correr en un thread."""
+    url = course_info["moodle_url"]
+    if is_ingenia_url(url):
+        return slug, _scrape_ingenia_course(url)
+
+    if session is None:
+        print(f"  ⚠ {course_info['name']} requiere sesion de Moodle.")
+        return slug, []
+
+    try:
+        r = session.get(url, timeout=30)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  ⚠ Error accediendo a {course_info['name']}: {e}")
+        return slug, []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    links = _scrape_moodle_table_zoom_inputs(soup)
+    if not links:
+        links = _scrape_moodle_zoom_anchor_rows(soup, r.url)
 
     return slug, links
 
