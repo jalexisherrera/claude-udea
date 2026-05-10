@@ -7,7 +7,6 @@ import subprocess
 import sys
 import os
 import re
-import asyncio
 import threading
 import time
 from pathlib import Path
@@ -49,26 +48,31 @@ def _get_work_dir() -> Path:
 
 
 def _ensure_templates(work_dir: Path):
-    """Copia CLAUDE.md, rules y skills si no existen."""
+    """Copia instrucciones, rules y skills para el asistente configurado."""
     import shutil
     templates_dir = Path(__file__).parent / "templates"
     if not templates_dir.exists():
         return
 
-    # CLAUDE.md — regenerar siempre con las asignaturas actuales
-    _generate_claude_md(work_dir)
+    # Generar MD de instrucciones (CLAUDE.md y/o GEMINI.md)
+    _generate_assistant_md(work_dir)
 
-    # .claude/rules.md y skills/
+    # .claude/rules.md y skills/ (también .gemini/ para Gemini)
     src_claude_dir = templates_dir / ".claude"
-    dest_claude_dir = work_dir / ".claude"
-    if src_claude_dir.exists():
-        dest_claude_dir.mkdir(exist_ok=True)
+    if not src_claude_dir.exists():
+        return
+
+    for dest_name in (".claude", ".gemini"):
+        dest_dir = work_dir / dest_name
+        dest_dir.mkdir(exist_ok=True)
+
         src_rules = src_claude_dir / "rules.md"
-        dest_rules = dest_claude_dir / "rules.md"
+        dest_rules = dest_dir / "rules.md"
         if src_rules.exists() and not dest_rules.exists():
             shutil.copy2(src_rules, dest_rules)
+
         src_skills = src_claude_dir / "skills"
-        dest_skills = dest_claude_dir / "skills"
+        dest_skills = dest_dir / "skills"
         if src_skills.exists():
             dest_skills.mkdir(exist_ok=True)
             for skill_file in src_skills.glob("*.md"):
@@ -77,24 +81,16 @@ def _ensure_templates(work_dir: Path):
                     shutil.copy2(skill_file, dest_skill)
 
 
-def _generate_claude_md(work_dir: Path):
-    """Genera CLAUDE.md dinámicamente según las asignaturas configuradas."""
-    config_path = work_dir / "config.json"
-    if not config_path.exists():
-        return
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
-
-    courses = config.get("courses", {})
+def _build_assistant_md(courses: dict) -> str:
+    """Genera el contenido de instrucciones para el asistente (agnóstico del LLM)."""
     course_lines = "\n".join(
-        f"- **{info['name']}** → `downloads/transcripts/{slug}/`"
+        f"- **{info['name']}** -> `downloads/transcripts/{slug}/`"
         for slug, info in courses.items()
     )
 
-    content = f"""# Asistente Académico UdeA
+    return f"""# Asistente Academico UdeA
 
-Eres un asistente académico especializado para un estudiante de la Universidad de Antioquia. Tu única fuente de verdad son las transcripciones de clase en formato WebVTT ubicadas en `downloads/transcripts/`.
+Eres un asistente academico especializado para un estudiante de la Universidad de Antioquia. Tu unica fuente de verdad son las transcripciones de clase en formato WebVTT ubicadas en `downloads/transcripts/`.
 
 ## Asignaturas
 
@@ -104,33 +100,33 @@ Eres un asistente académico especializado para un estudiante de la Universidad 
 
 Cada archivo VTT tiene la fecha de la clase de tres formas:
 1. **En el nombre del archivo**: prefijo `YYYY-MM-DD_` (ej: `2026-03-09_CALIDAD...vtt`)
-2. **Dentro del archivo**: bloque `NOTE` al inicio con fecha, asignatura, tema y duración
-3. **En el índice**: `downloads/transcripts/index.json` tiene un listado completo ordenado por fecha
+2. **Dentro del archivo**: bloque `NOTE` al inicio con fecha, asignatura, tema y duracion
+3. **En el indice**: `downloads/transcripts/index.json` tiene un listado completo ordenado por fecha
 
-Cuando el estudiante pregunte "cuándo se dijo X" o "qué se vio el día Y", usa estas fechas para dar respuestas precisas. Lee `index.json` primero para ubicar las grabaciones por fecha sin tener que abrir cada archivo.
+Cuando el estudiante pregunte "cuando se dijo X" o "que se vio el dia Y", usa estas fechas para dar respuestas precisas. Lee `index.json` primero para ubicar las grabaciones por fecha sin tener que abrir cada archivo.
 
 ## Funciones principales
 
-### 1. Enseñar
-Enseñar TODO lo visto en clase de forma organizada, profesional, al grano. No omitir ningún tema. No inventar contenido que no esté en las transcripciones. Cada tema debe tener referencia a la grabación y minuto donde se trató.
+### 1. Ensenar
+Ensenar TODO lo visto en clase de forma organizada, profesional, al grano. No omitir ningun tema. No inventar contenido que no este en las transcripciones. Cada tema debe tener referencia a la grabacion y minuto donde se trato.
 
 ### 2. Informar compromisos
 Encontrar TODOS los pendientes: parciales, quices, tareas, talleres, trabajos, entregas, exposiciones, o cualquier actividad mencionada en clase. Presentarlos visualmente de forma clara con fechas y estado.
 
 ### 3. Planear y organizar
-Ayudar al estudiante a planificar su tiempo: crear horarios de estudio, priorizar tareas, distribuir carga académica, y asegurar que cumpla con todo.
+Ayudar al estudiante a planificar su tiempo: crear horarios de estudio, priorizar tareas, distribuir carga academica, y asegurar que cumpla con todo.
 
 ## Reglas de referencia
 
 Siempre que menciones un tema o un pendiente, incluye:
-- Nombre del archivo VTT (grabación)
+- Nombre del archivo VTT (grabacion)
 - Fecha de la clase
 - Timestamp (minuto aproximado)
 - Asignatura
 
 Formato: `[Asignatura | 2026-03-09 | archivo.vtt | ~min 23]`
 
-## Cómo leer las transcripciones
+## Como leer las transcripciones
 
 Los archivos `.vtt` tienen este formato:
 ```
@@ -140,7 +136,7 @@ NOTE
 Fecha de clase: 2026-03-09
 Asignatura: Calidad de Software
 Tema: CALIDAD DE SOFTWARE (2026-1)
-Duración: 81 min
+Duracion: 81 min
 
 1
 00:12:34.000 --> 00:12:38.000
@@ -151,16 +147,29 @@ El timestamp `00:12:34` = minuto 12. Usa eso para dar referencias.
 
 ## Comportamiento
 
-- Responde en español
-- Sé directo y conciso a menos que te pidan profundizar
+- Responde en espanol
+- Se directo y conciso a menos que te pidan profundizar
 - No des ejemplos a menos que te los pidan (usa /ejemplos)
-- Si el estudiante se desvía del tema académico, redirige amablemente
-- Nunca inventes información que no esté en las transcripciones
+- Si el estudiante se desvia del tema academico, redirige amablemente
+- Nunca inventes informacion que no este en las transcripciones
 - Si no encuentras algo en las transcripciones, dilo honestamente
 """
 
-    with open(work_dir / "CLAUDE.md", "w", encoding="utf-8") as f:
-        f.write(content)
+
+def _generate_assistant_md(work_dir: Path):
+    """Genera CLAUDE.md y GEMINI.md segun las asignaturas configuradas."""
+    config_path = work_dir / "config.json"
+    if not config_path.exists():
+        return
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    content = _build_assistant_md(config.get("courses", {}))
+
+    for filename in ("CLAUDE.md", "GEMINI.md"):
+        with open(work_dir / filename, "w", encoding="utf-8") as f:
+            f.write(content)
 
 
 
@@ -255,149 +264,221 @@ class Spinner:
         print(f"\r  ✔ {self.msg}  ")
 
 
-# ─── Fase 1: Scraping ───────────────────────────────────────
+# ─── Scraping + Descarga (pipeline paralelo) ──────────────
 
-def fase_scraping(work_dir, config, recordings_path, target_courses):
-    from claude_udea.browser import login_and_scrape
-
-    existing = load_recordings(recordings_path)
-
-    courses_to_scrape = {slug: config["courses"][slug] for slug in target_courses}
-
-    scraped = asyncio.run(login_and_scrape(work_dir, courses_to_scrape))
-
-    total_new = 0
-    for slug, links in scraped.items():
-        course_info = config["courses"][slug]
-        if slug not in existing:
-            existing[slug] = {
-                "name": course_info["name"],
-                "recordings": {},
-                "last_scraped": None,
-            }
-
-        course_data = existing[slug]
-        # Índice de start_dates existentes para deduplicar
-        known_dates = {
-            rec["start_date"]
-            for rec in course_data["recordings"].values()
-            if rec.get("start_date")
+def _merge_scraped(existing, config, slug, links):
+    """Merge resultados de scraping en existing. Retorna lista de nuevos pendientes."""
+    course_info = config["courses"][slug]
+    if slug not in existing:
+        existing[slug] = {
+            "name": course_info["name"],
+            "recordings": {},
+            "last_scraped": None,
         }
-        for link in links:
-            rec_id = extract_recording_id(link["url"])
-            start_date = link.get("start_date", "")
 
-            # Duplicado si ya existe por rec_id O por start_date
-            if rec_id in course_data["recordings"]:
-                # Actualizar URL por si cambió el share token
-                course_data["recordings"][rec_id]["url"] = link["full_url"]
-                course_data["recordings"][rec_id]["share_url"] = link["url"]
-                continue
-            if start_date and start_date in known_dates:
-                continue
+    course_data = existing[slug]
+    known_dates = {
+        rec["start_date"]
+        for rec in course_data["recordings"].values()
+        if rec.get("start_date")
+    }
 
-            course_data["recordings"][rec_id] = {
-                "url": link["full_url"],
-                "share_url": link["url"],
-                "title": link.get("topic") or link["text"],
-                "meeting_id": link.get("meeting_id", ""),
-                "start_date": start_date,
-                "duration_minutes": link.get("duration_minutes", 0),
-                "scraped_at": datetime.now().isoformat(),
-                "downloaded": False,
-            }
-            known_dates.add(start_date)
-            total_new += 1
-        course_data["last_scraped"] = datetime.now().isoformat()
+    new_pending = []
+    for link in links:
+        rec_id = extract_recording_id(link["url"])
+        start_date = link.get("start_date", "")
 
-    save_recordings(recordings_path, existing)
+        if rec_id in course_data["recordings"]:
+            course_data["recordings"][rec_id]["url"] = link["full_url"]
+            course_data["recordings"][rec_id]["share_url"] = link["url"]
+            continue
+        if start_date and start_date in known_dates:
+            continue
 
-    total_recs = sum(len(c.get("recordings", {})) for c in existing.values())
-    if total_new:
-        print(f"  ✔ {total_recs} grabaciones encontradas ({total_new} nuevas)\n")
-    else:
-        print(f"  ✔ {total_recs} grabaciones encontradas, todo al día\n")
-    return existing
+        rec_info = {
+            "url": link["full_url"],
+            "share_url": link["url"],
+            "title": link.get("topic") or link["text"],
+            "meeting_id": link.get("meeting_id", ""),
+            "start_date": start_date,
+            "duration_minutes": link.get("duration_minutes", 0),
+            "scraped_at": datetime.now().isoformat(),
+            "downloaded": False,
+        }
+        course_data["recordings"][rec_id] = rec_info
+        known_dates.add(start_date)
+        url = rec_info.get("url") or rec_info.get("share_url", "")
+        if url:
+            new_pending.append((slug, rec_id, rec_info, url))
+
+    course_data["last_scraped"] = datetime.now().isoformat()
+    return new_pending
 
 
-# ─── Fase 2: Descarga ───────────────────────────────────────
-
-def fase_descarga(config, recordings, target_courses, skip_video, dry_run):
+def fase_scraping_y_descarga(work_dir, config, recordings_path, target_courses, skip_video, dry_run, skip_scrape=False):
+    """
+    Pipeline paralelo: login → scrape todas las materias en paralelo →
+    a medida que cada scrape termina, lanza descargas inmediatamente.
+    Todo con un solo ThreadPoolExecutor.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from claude_udea.auth import is_ingenia_url, login, _scrape_one
     from claude_udea.download import get_archive_path, is_downloaded, download_one
     from tqdm import tqdm
 
+    existing = load_recordings(recordings_path)
     download_dir = Path(config["download_dir"])
     archive_path = get_archive_path(download_dir)
 
-    # Planificar
-    pending = []
-    already = 0
-    for slug in target_courses:
-        if slug not in recordings:
-            continue
-        course = recordings[slug]
-        for rec_id, rec_info in course.get("recordings", {}).items():
-            if rec_info.get("downloaded") or is_downloaded(archive_path, rec_id):
-                already += 1
-            else:
-                url = rec_info.get("url") or rec_info.get("share_url", "")
-                if url:
-                    pending.append((slug, rec_id, rec_info, url))
-
-    if not pending:
-        print(f"  ✔ {already} grabaciones ya descargadas, nada nuevo\n")
-        return 0
-
-    print(f"  {already} ya descargadas, {len(pending)} pendientes\n")
-
-    mode = "Descargando transcripciones" if skip_video else "Descargando video + transcripciones"
-    pbar = tqdm(
-        pending, desc=f"  {mode}", unit="grab",
-        bar_format="  {desc}  {bar}  {n_fmt}/{total_fmt}",
-        ncols=70,
+    courses_to_scrape = {slug: config["courses"][slug] for slug in target_courses}
+    needs_moodle_login = any(
+        not is_ingenia_url(info.get("moodle_url", ""))
+        for info in courses_to_scrape.values()
     )
 
+    # Login solo si vamos a scrapear
+    session = None
+    if not skip_scrape and needs_moodle_login:
+        session = login(work_dir)
+    elif not skip_scrape:
+        print("  Solo fuentes Ingenia — no se requiere login en Moodle.\n")
+
+    # Contar ya descargadas
+    already = 0
+    for slug in target_courses:
+        if slug not in existing:
+            continue
+        for rec_id, rec_info in existing[slug].get("recordings", {}).items():
+            if rec_info.get("downloaded") or is_downloaded(archive_path, rec_id):
+                already += 1
+
+    total_new = 0
+    total_ok = 0
     total_failed = 0
-    for slug, rec_id, rec_info, url in pbar:
-        course_dir = download_dir / slug
-        ok = download_one(url, course_dir, archive_path, skip_video, dry_run)
-        if ok:
-            rec_info["downloaded"] = True
-            rec_info["downloaded_at"] = datetime.now().isoformat()
+    total_processing = 0
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        download_futures = []
+
+        if not skip_scrape:
+            print("  Scrapeando y descargando en paralelo...\n")
+
+            # Lanzar scraping de todas las materias en paralelo
+            scrape_futures = {
+                pool.submit(_scrape_one, session, slug, info): slug
+                for slug, info in courses_to_scrape.items()
+            }
+
+            # A medida que cada scrape termina, lanzar descargas
+            for future in as_completed(scrape_futures):
+                slug, links = future.result()
+                course_name = config["courses"][slug]["name"]
+
+                # Merge y obtener pendientes nuevos
+                new_pending = _merge_scraped(existing, config, slug, links)
+
+                # Filtrar los que ya están descargados
+                pending = []
+                for item in new_pending:
+                    _, rec_id, _, _ = item
+                    if not is_downloaded(archive_path, rec_id):
+                        pending.append(item)
+                    else:
+                        already += 1
+
+                # También agregar pendientes de ejecuciones previas
+                if slug in existing:
+                    for rec_id, rec_info in existing[slug].get("recordings", {}).items():
+                        if rec_info.get("downloaded") or is_downloaded(archive_path, rec_id):
+                            continue
+                        url = rec_info.get("url") or rec_info.get("share_url", "")
+                        if url and not any(p[1] == rec_id for p in pending):
+                            pending.append((slug, rec_id, rec_info, url))
+
+                total_new += len(new_pending)
+                print(f"  ✔ {course_name}: {len(links)} grabaciones, {len(pending)} pendientes")
+
+                # Lanzar descargas en paralelo
+                for item in pending:
+                    slug_d, rec_id, rec_info, url = item
+                    course_dir = download_dir / slug_d
+                    df = pool.submit(download_one, url, course_dir, archive_path, skip_video, dry_run)
+                    download_futures.append((slug_d, rec_id, rec_info, df))
         else:
-            total_failed += 1
+            # Sin scraping: solo descargar pendientes existentes
+            for slug in target_courses:
+                if slug not in existing:
+                    continue
+                for rec_id, rec_info in existing[slug].get("recordings", {}).items():
+                    if rec_info.get("downloaded") or is_downloaded(archive_path, rec_id):
+                        already += 1
+                        continue
+                    url = rec_info.get("url") or rec_info.get("share_url", "")
+                    if url:
+                        course_dir = download_dir / slug
+                        df = pool.submit(download_one, url, course_dir, archive_path, skip_video, dry_run)
+                        download_futures.append((slug, rec_id, rec_info, df))
 
-    pbar.close()
+        # Esperar descargas con barra de progreso
+        if download_futures:
+            print()
+            mode = "Descargando transcripciones" if skip_video else "Descargando video + transcripciones"
+            pbar = tqdm(
+                total=len(download_futures), desc=f"  {mode}", unit="grab",
+                bar_format="  {desc}  {bar}  {n_fmt}/{total_fmt}",
+                ncols=70,
+            )
+            for slug_d, rec_id, rec_info, df in download_futures:
+                status = df.result()
+                if status == "ok":
+                    rec_info["downloaded"] = True
+                    rec_info["downloaded_at"] = datetime.now().isoformat()
+                    total_ok += 1
+                elif status == "processing":
+                    total_processing += 1
+                else:
+                    total_failed += 1
+                pbar.update(1)
+            pbar.close()
 
-    if not dry_run:
-        recordings_path = Path(config["recordings_file"])
-        save_recordings(recordings_path, recordings)
+    # Guardar estado
+    save_recordings(recordings_path, existing)
 
-    if total_failed:
-        print(f"\n  ✔ {len(pending) - total_failed} descargadas, {total_failed} fallidas\n")
-    else:
-        print(f"\n  ✔ Listo\n")
+    # Resumen
+    total_recs = sum(len(c.get("recordings", {})) for c in existing.values())
+    print(f"\n  ✔ {total_recs} grabaciones totales ({total_new} nuevas)")
 
-    return total_failed
+    if download_futures:
+        parts = []
+        if total_ok:
+            parts.append(f"{total_ok} descargadas")
+        if already:
+            parts.append(f"{already} ya estaban")
+        if total_processing:
+            parts.append(f"{total_processing} procesándose en Zoom")
+        if total_failed:
+            parts.append(f"{total_failed} fallidas")
+        if parts:
+            print(f"  ✔ {', '.join(parts)}")
+    elif already:
+        print(f"  ✔ {already} ya descargadas, nada nuevo")
+
+    print()
+    return existing, total_failed
 
 
-# ─── Fase 3: Validación + Claude Code ───────────────────────
+# ─── Fase 3: Validación + Asistente AI ────────────────────
 
-def fase_final(
-    config,
-    recordings,
-    target_courses,
-    assistant: str = "claude",
-    ollama_model: str | None = None,
-):
-    """
-    assistant: 'claude' | 'none' | 'ollama'
-    """
+def _get_assistant(config) -> str:
+    """Retorna el asistente configurado."""
+    return config.get("assistant", "claude")
+
+
+def fase_final(config, recordings, target_courses, assistant_override: str | None = None,
+               ollama_model: str | None = None):
     from claude_udea.download import copy_transcripts, count_transcripts
 
     download_dir = Path(config["download_dir"])
-    work_dir = download_dir.parent
-    transcripts_dir = download_dir / "transcripts"
 
     with Spinner("Organizando transcripciones..."):
         copy_transcripts(download_dir, recordings)
@@ -414,18 +495,7 @@ def fase_final(
     if total_vtts == 0:
         return
 
-    if assistant == "none":
-        print("  Modo --no-claude: no se abre Claude Code (servicio aparte; requiere cuenta Anthropic).")
-        print(f"  Tus .vtt están en:\n    {transcripts_dir.resolve()}\n")
-        print("  Podés usar --ollama para un chat local gratis (Ollama), o leer los .vtt con otro asistente.")
-        print(f"  Guía de tono y tareas: {work_dir / 'CLAUDE.md'}\n")
-        return
-
-    if assistant == "ollama":
-        from claude_udea.ollama_chat import run_session
-
-        run_session(work_dir, transcripts_dir, ollama_model)
-        return
+    transcripts_dir = download_dir / "transcripts"
     summary_lines = []
     for slug in target_courses:
         if slug not in recordings:
@@ -443,15 +513,38 @@ def fase_final(
         "Hola. Acabo de descargar las transcripciones de mis clases. "
         "Tengo esto disponible:\n\n"
         + "\n".join(summary_lines) + "\n\n"
-        "Presentate brevemente y mostrame qué comandos tengo disponibles."
+        "Presentate brevemente y mostrame que comandos tengo disponibles."
     )
 
-    # Abrir Claude Code desde ~/claude-udea donde está CLAUDE.md y las skills
+    work_dir = download_dir.parent
+    assistant = assistant_override or _get_assistant(config)
+
+    if assistant == "none":
+        print("  Modo sin asistente: no se abre Claude Code ni Gemini.")
+        print(f"  Tus .vtt estan en:\n    {transcripts_dir.resolve()}\n")
+        print(f"  Guia de tono y tareas: {work_dir / 'CLAUDE.md'}\n")
+        return
+
+    if assistant == "ollama":
+        from claude_udea.ollama_chat import run_session
+
+        run_session(work_dir, transcripts_dir, ollama_model)
+        return
+
+    if assistant == "gemini":
+        cmd = ["gemini"]
+    else:
+        cmd = ["claude", "--dangerously-skip-permissions", prompt]
+
     try:
-        subprocess.run(["claude", "--dangerously-skip-permissions", prompt], cwd=str(work_dir.resolve()))
+        subprocess.run(cmd, cwd=str(work_dir.resolve()))
     except FileNotFoundError:
-        print("  'claude' no está en el PATH.")
-        print(f"  Abrilo manualmente en: {work_dir.resolve()}")
+        print(f"  '{assistant}' no esta en el PATH.")
+        if assistant == "gemini":
+            print("  Instala con: npm install -g @google/gemini-cli")
+        else:
+            print("  Instala con: npm install -g @anthropic-ai/claude-code")
+        print(f"  O abri manualmente en: {work_dir.resolve()}")
 
 
 # ─── Main ────────────────────────────────────────────────────
@@ -461,11 +554,11 @@ def main():
 
     args, ollama_cli_model = parse_ollama_model_flag(sys.argv[1:])
     use_ollama = "--ollama" in args
-    no_claude = "--no-claude" in args
-    require_claude = not use_ollama and not no_claude
+    no_assistant = "--no-assistant" in args or "--no-claude" in args
 
+    # Validar dependencias
     from claude_udea.deps import check_and_install
-    if not check_and_install(require_claude=require_claude):
+    if not check_and_install(require_assistant=not (use_ollama or no_assistant)):
         sys.exit(1)
 
     import questionary
@@ -492,16 +585,16 @@ def main():
         from claude_udea.setup import add_course
         add_course(work_dir)
         # Regenerar CLAUDE.md con la nueva asignatura
-        _generate_claude_md(work_dir)
+        _generate_assistant_md(work_dir)
         return
 
     course_args = [a for a in args if not a.startswith("--")]
     if use_ollama:
-        assistant = "ollama"
-    elif no_claude:
-        assistant = "none"
+        assistant_override = "ollama"
+    elif no_assistant:
+        assistant_override = "none"
     else:
-        assistant = "claude"
+        assistant_override = None
     all_courses = list(config["courses"].keys())
 
     for slug in course_args:
@@ -554,24 +647,23 @@ def main():
 
     print()
 
-    # Fase 1
+    # Scraping + Descarga (pipeline paralelo)
     if skip_scrape:
         recordings = load_recordings(recordings_path)
         if not recordings:
             print("  No hay datos previos. Ejecutá sin --skip-scrape.\n")
             sys.exit(1)
-    else:
-        recordings = fase_scraping(work_dir, config, recordings_path, target_courses)
+    recordings, failed = fase_scraping_y_descarga(
+        work_dir, config, recordings_path, target_courses, skip_video, dry_run,
+        skip_scrape=skip_scrape,
+    )
 
-    # Fase 2
-    failed = fase_descarga(config, recordings, target_courses, skip_video, dry_run)
-
-    # Fase 3
-    if not dry_run and failed == 0:
+    # Organizar transcripciones + Claude Code
+    if not dry_run:
         fase_final(
             config,
             recordings,
             target_courses,
-            assistant=assistant,
+            assistant_override=assistant_override,
             ollama_model=ollama_cli_model,
         )
