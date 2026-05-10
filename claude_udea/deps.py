@@ -67,10 +67,13 @@ def _install_claude_code():
     )
 
 
-def check_and_install(auto=False):
+def check_and_install(auto=False, require_claude=True):
     """
     Verifica dependencias. Si falta algo, pregunta si instalar.
     Retorna True si todo está listo.
+
+    Si require_claude es False, no exige el CLI de Claude Code ni Node/npm solo por eso
+    (modo --no-claude: solo descarga y organiza transcripciones).
     """
     missing = []
 
@@ -84,8 +87,13 @@ def check_and_install(auto=False):
 
     claude_ok = _check_claude_cli()
 
-    if not missing and chromium_ok and claude_ok:
-        return True
+    core_ok = not missing and chromium_ok
+    if require_claude:
+        if core_ok and claude_ok:
+            return True
+    else:
+        if core_ok:
+            return True
 
     # Mostrar qué falta
     print("\n  Dependencias faltantes:\n")
@@ -99,7 +107,7 @@ def check_and_install(auto=False):
     node_ok = _check_node()
     npm_ok = _check_npm()
 
-    if not claude_ok:
+    if require_claude and not claude_ok:
         if npm_ok:
             print("    - claude: CLI de Claude Code (se instalará con npm)")
         elif not node_ok:
@@ -111,11 +119,12 @@ def check_and_install(auto=False):
     print()
 
     # Si falta Node.js y Claude Code, no podemos continuar
-    if not claude_ok and not node_ok:
+    if require_claude and not claude_ok and not node_ok:
         print("  ⚠ Claude Code es necesario y requiere Node.js para instalarse.")
         print("    1. Instalá Node.js desde https://nodejs.org/ (LTS recomendado)")
         print("    2. Cerrá y reabrí la terminal")
-        print("    3. Ejecutá claude_udea de nuevo\n")
+        print("    3. Ejecutá claude_udea de nuevo")
+        print("    O usá: claude_udea --no-claude  (solo transcripciones, sin Claude Code)\n")
         return False
 
     # Preguntar
@@ -171,7 +180,7 @@ def check_and_install(auto=False):
             return False
 
     # Instalar Claude Code si falta
-    if not claude_ok and npm_ok:
+    if require_claude and not claude_ok and npm_ok:
         print("  Instalando Claude Code CLI...")
         try:
             _install_claude_code()

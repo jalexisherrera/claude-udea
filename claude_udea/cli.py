@@ -383,10 +383,21 @@ def fase_descarga(config, recordings, target_courses, skip_video, dry_run):
 
 # ─── Fase 3: Validación + Claude Code ───────────────────────
 
-def fase_final(config, recordings, target_courses):
+def fase_final(
+    config,
+    recordings,
+    target_courses,
+    assistant: str = "claude",
+    ollama_model: str | None = None,
+):
+    """
+    assistant: 'claude' | 'none' | 'ollama'
+    """
     from claude_udea.download import copy_transcripts, count_transcripts
 
     download_dir = Path(config["download_dir"])
+    work_dir = download_dir.parent
+    transcripts_dir = download_dir / "transcripts"
 
     with Spinner("Organizando transcripciones..."):
         copy_transcripts(download_dir, recordings)
@@ -403,7 +414,18 @@ def fase_final(config, recordings, target_courses):
     if total_vtts == 0:
         return
 
-    transcripts_dir = download_dir / "transcripts"
+    if assistant == "none":
+        print("  Modo --no-claude: no se abre Claude Code (servicio aparte; requiere cuenta Anthropic).")
+        print(f"  Tus .vtt están en:\n    {transcripts_dir.resolve()}\n")
+        print("  Podés usar --ollama para un chat local gratis (Ollama), o leer los .vtt con otro asistente.")
+        print(f"  Guía de tono y tareas: {work_dir / 'CLAUDE.md'}\n")
+        return
+
+    if assistant == "ollama":
+        from claude_udea.ollama_chat import run_session
+
+        run_session(work_dir, transcripts_dir, ollama_model)
+        return
     summary_lines = []
     for slug in target_courses:
         if slug not in recordings:
@@ -424,8 +446,7 @@ def fase_final(config, recordings, target_courses):
         "Presentate brevemente y mostrame qué comandos tengo disponibles."
     )
 
-    # Abrir Claude Code desde C:\claude-udea donde está CLAUDE.md y las skills
-    work_dir = download_dir.parent
+    # Abrir Claude Code desde ~/claude-udea donde está CLAUDE.md y las skills
     try:
         subprocess.run(["claude", "--dangerously-skip-permissions", prompt], cwd=str(work_dir.resolve()))
     except FileNotFoundError:
@@ -436,9 +457,15 @@ def fase_final(config, recordings, target_courses):
 # ─── Main ────────────────────────────────────────────────────
 
 def main():
-    # Validar dependencias
+    from claude_udea.ollama_chat import parse_ollama_model_flag
+
+    args, ollama_cli_model = parse_ollama_model_flag(sys.argv[1:])
+    use_ollama = "--ollama" in args
+    no_claude = "--no-claude" in args
+    require_claude = not use_ollama and not no_claude
+
     from claude_udea.deps import check_and_install
-    if not check_and_install():
+    if not check_and_install(require_claude=require_claude):
         sys.exit(1)
 
     import questionary
@@ -454,7 +481,6 @@ def main():
     archive_path = get_archive_path(download_dir)
 
     # Flags
-    args = sys.argv[1:]
     dry_run = "--dry-run" in args
     status_only = "--status" in args
     skip_scrape = "--skip-scrape" in args
@@ -470,6 +496,12 @@ def main():
         return
 
     course_args = [a for a in args if not a.startswith("--")]
+    if use_ollama:
+        assistant = "ollama"
+    elif no_claude:
+        assistant = "none"
+    else:
+        assistant = "claude"
     all_courses = list(config["courses"].keys())
 
     for slug in course_args:
@@ -536,4 +568,10 @@ def main():
 
     # Fase 3
     if not dry_run and failed == 0:
-        fase_final(config, recordings, target_courses)
+        fase_final(
+            config,
+            recordings,
+            target_courses,
+            assistant=assistant,
+            ollama_model=ollama_cli_model,
+        )

@@ -27,7 +27,7 @@ Todo en un solo comando: `claude_udea`
 
 ---
 
-## ✨ Características
+## Características
 
 - **Setup interactivo** — la primera vez te guía para configurar tus asignaturas
 - **Instalación automática** — detecta e instala dependencias faltantes (incluido Claude Code)
@@ -41,19 +41,19 @@ Todo en un solo comando: `claude_udea`
 
 ---
 
-## 📋 Requisitos previos
+## Requisitos previos
 
 | Requisito | Para qué | Cómo instalar |
 |-----------|----------|---------------|
 | **Python ≥ 3.10** | Ejecutar la herramienta | [python.org](https://www.python.org/downloads/) |
-| **Node.js ≥ 18** | Instalar Claude Code | [nodejs.org](https://nodejs.org/) (LTS) |
+| **Node.js ≥ 18** | Instalar **Claude Code** (opcional si usás `--no-claude`) | [nodejs.org](https://nodejs.org/) (LTS) |
 | **Git** | Clonar el repositorio | [git-scm.com](https://git-scm.com/) |
 
-> 💡 Las demás dependencias (Playwright, Chromium, Claude Code, etc.) se instalan automáticamente en la primera ejecución.
+> Playwright y Chromium pueden instalarse automáticamente en la primera ejecución. **Claude Code** también, salvo que ejecutes con `--no-claude` (solo transcripciones locales).
 
 ---
 
-## 🚀 Instalación
+## Instalación
 
 ### Opción 1: Desde GitHub (recomendado)
 
@@ -71,11 +71,11 @@ pip install -e .
 
 ---
 
-## 🎯 Uso
+## Uso
 
 ### Primera vez
 
-> ⚠️ **Antes de empezar**: tené listos los enlaces de **cada** asignatura: o bien la lista de grabaciones en **Moodle**, o bien la página de la reunión en **Ingenia** (Virtual Ingeniería).
+> **Antes de empezar**: tené listos los enlaces de **cada** asignatura: o bien la lista de grabaciones en **Moodle**, o bien la página de la reunión en **Ingenia** (Virtual Ingeniería).
 > Solo se piden **una vez** en el setup — después el CLI los usa en cada ejecución.
 
 #### ¿Cómo conseguir el link? (Moodle — UdeArroba)
@@ -127,7 +127,47 @@ claude_udea --skip-video      # Solo transcripciones (sin preguntar)
 claude_udea --all             # Video + transcripciones (sin preguntar)
 claude_udea --dry-run         # Simular sin descargar nada
 claude_udea --add-course      # Agregar una nueva asignatura
+claude_udea --no-claude       # Solo descarga y organiza .vtt; no abre Claude Code ni exige su CLI
+claude_udea --ollama          # Tras descargar, abre un chat local con Ollama (gratis, sin API)
+claude_udea --ollama --ollama-model mistral   # Elegir modelo instalado en Ollama
 ```
+
+### Asistente local gratis (Ollama)
+
+Si no querés pagar Claude Code, podés usar **[Ollama](https://ollama.com/)**: modelos en tu PC, sin cuenta ni API.
+
+1. Instalá Ollama desde [ollama.com/download](https://ollama.com/download).
+2. Bajá un modelo (ejemplo, ~2–5 GB según modelo):
+
+   ```bash
+   ollama pull llama3.2
+   ```
+
+3. Ejecutá el flujo habitual con **`--ollama`** (y opcionalmente `--skip-video`):
+
+   ```bash
+   claude_udea --ollama --skip-video
+   ```
+
+Al terminar la descarga se abre un **chat en la terminal**: el sistema usa tu `CLAUDE.md`, el `index.json` de transcripciones y un resumen de las skills. Para meter el texto de una clase en el contexto usá:
+
+`/leer <carpeta-del-curso>/archivo.vtt`
+
+y en el **siguiente** mensaje hacé la pregunta.
+
+Los archivos **no** están dentro del clone del repo: están en la carpeta de trabajo del programa (`~/claude-udea/downloads/transcripts/` en Linux/macOS). Al entrar al chat se imprime un **listado**; podés volver a verlo con **`/listado`** (o `/ls`).
+
+Variable de entorno opcional: `CLAUDE_UDEA_OLLAMA_MODEL` (por defecto `llama3.2`). Si Ollama corre en otro host: `OLLAMA_HOST`.
+
+### Sin cuenta de Claude Code
+
+**Claude Code** es un producto aparte de Anthropic (CLI con suscripción / acceso propio). Si **no** lo vas a usar, igual podés aprovechar la herramienta para bajar y ordenar transcripciones:
+
+```bash
+claude_udea --no-claude --skip-video
+```
+
+No se instala ni exige el comando `claude` ni Node.js solo por eso. Los archivos quedan en `~/claude-udea/downloads/transcripts/` (o `C:\claude-udea\...` en Windows). Para un asistente **gratis integrado**, usá **`--ollama`** arriba; si no, podés abrir los `.vtt` en un editor o subirlos a **claude.ai**, **ChatGPT**, **Gemini**, **Cursor**, etc. El archivo `CLAUDE.md` resume el rol del asistente.
 
 ### Filtrar por asignatura
 
@@ -138,7 +178,7 @@ claude_udea ingenieria-web optimizacion  # Varias específicas
 
 ---
 
-## 🤖 Skills de Claude Code
+## Skills de Claude Code
 
 Una vez dentro de Claude Code, tenés comandos especializados:
 
@@ -170,7 +210,7 @@ Una vez dentro de Claude Code, tenés comandos especializados:
 
 ---
 
-## 📁 Estructura de archivos
+## Estructura de archivos
 
 ```
 ~/claude-udea/                    # macOS/Linux
@@ -204,7 +244,7 @@ C:\claude-udea\                   # Windows
 
 ---
 
-## 🔧 Cómo funciona
+## Cómo funciona
 
 Las asignaturas pueden mezclarse: unas con lista en **Moodle**, otras con página en **Ingenia** (`/zoom/meeting/<ID>`). El `config.json` guarda el mismo campo `moodle_url` para cualquiera de los dos (nombre histórico).
 
@@ -224,7 +264,7 @@ Las asignaturas pueden mezclarse: unas con lista en **Moodle**, otras con págin
 
 ---
 
-## 🔒 Privacidad y seguridad
+## Privacidad y seguridad
 
 - Tus credenciales de Moodle **nunca se guardan** — el login es manual en un navegador real
 - Las páginas de reuniones en Ingenia se consultan como en un navegador normal; **no usan** la sesión de UdeArroba
@@ -235,7 +275,7 @@ Las asignaturas pueden mezclarse: unas con lista en **Moodle**, otras con págin
 
 ---
 
-## ❓ Solución de problemas
+## Solución de problemas
 
 ### "Claude Code no está instalado"
 ```bash
